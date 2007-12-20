@@ -6,6 +6,8 @@ See LICENSE for details.
 
 Need an implementation for your operating system? Mail me!
 
+0) support /sys/block/sda/queue/nr_requests
+
 1) we need to reap aio events periodically.
 
    As by the time of this writing there is no consent
