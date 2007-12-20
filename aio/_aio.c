@@ -10,13 +10,6 @@
 
 */
 
-/* XXX i jeszcze dodatkowo, jako bonus "extra", napisac w C procedurki,
-   ktore umozliwiaja:
-   kopiowanie pliku po AIO,
-   serwowanie pliku przez web po AIO (tj. lighthttpd) - wspolpraca z sendfile moze jakas?
-*/
-
-
 #include <Python.h>
 #include <structmember.h>
 #include <sys/mman.h>
