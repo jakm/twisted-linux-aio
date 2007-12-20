@@ -6,9 +6,14 @@ See LICENSE for details.
 
 Need an implementation for your operating system? Mail me!
 
-0) support /sys/block/sda/queue/nr_requests
+1) support /sys/block/sda/queue/nr_requests
 
-1) we need to reap aio events periodically.
+1.5) looking at linux kernel source, it seems likely, that 
+     you can get eventfd notification for completed
+     aio... just set IOCB_FLAG_RESFD in iocb->aio_flags
+     and set iocb->aio_resfd 
+
+2) we need to reap aio events periodically.
 
    As by the time of this writing there is no consent
    between Linux kernel developers, how file and socket AIO
@@ -23,14 +28,14 @@ Need an implementation for your operating system? Mail me!
    Running this in thread is not an option. Callbacks
    would be called from that thread, which is bad. 
 
-2) we need to handle situations, where Queue.busy >= Queue.maxIO
+3) we need to handle situations, where Queue.busy >= Queue.maxIO
 
    Programmer doesn't want to know about such low-level 
    stuff. Make that high-level queue, described in 1), return
    a deferred if there are no free slots, and wait for AIO
    operations to complete.
 
-3) extra stuff: 
+4) extra stuff: 
    - implement writing 
    - implement nevow.static.StaticAIOFile 
    - write a deferred shutil.copyfileobj replacement
