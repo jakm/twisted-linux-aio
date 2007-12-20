@@ -175,7 +175,7 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
     if (rc || sc) {
 
       PyObject *errback, *exception;
-
+      
       errback = PyObject_GetAttrString(defer, "errback");
       if (errback == NULL) { /* Not a Deferred? */
 	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object");
