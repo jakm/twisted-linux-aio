@@ -6,15 +6,13 @@
   Copyright (c) 2007 Michal Pasternak <michal.dtz@gmail.com>
   See LICENSE for details.
 
-  Need an implementation for your operating system? Mail me!
-
 */
 
 #include <Python.h>
 #include <structmember.h>
 #include <sys/mman.h>
-#include <libaio.h>
 
+#include "libasyio.c"
 
 /* ================================================================================
 
@@ -30,32 +28,16 @@ int PAGESIZE;
 
 /* End of module globals */
 
-inline PyObject *
-aioErrorToException(n) {
-    PyObject *args, *exc;
+PyObject *
+PyErr_SetFromAIOError(int n) {
     if (n == -ENOSYS)
-      args = Py_BuildValue("(is)", -ENOSYS, "No AIO in kernel.");
+      return PyErr_Format(PyExc_IOError, "%s", "No AIO in kernel.");
     else if (n < 0 && -n < sys_nerr)
-      args = Py_BuildValue("(is)", -n, sys_errlist[-n]);
+      return PyErr_Format(PyExc_IOError, "%s", sys_errlist[-n]);
     else
-      args = Py_BuildValue("(is)", -n, "Unknown AIO error.");
-    exc = PyInstance_New(PyExc_IOError, args, NULL);
-    Py_DECREF(args);
-    return exc;
-}
-
-inline PyObject *
-PyErr_SetFromAIOError(n) {
-    if (n == -ENOSYS)
-      PyErr_SetString(PyExc_IOError, "No AIO in kernel.");
-    else if (n < 0 && -n < sys_nerr)
-      PyErr_SetString(PyExc_IOError, sys_errlist[-n]);
-    else
-      PyErr_SetString(PyExc_IOError, "Unknown AIO error");
+      return PyErr_Format(PyExc_IOError, "%s", "Unknown AIO error");
     return NULL;
 }
-
-
 
 
 /* ================================================================================
@@ -72,11 +54,14 @@ typedef struct {
   PyObject_HEAD
 
   /* public */
-  int maxIO;
-  int busy;
+  unsigned int maxIO; /* maximum number of handled events */
+  unsigned int busy; /* current handled events */
+  unsigned int fd; /* notification fd */
 
   /* private */
-  io_context_t *ctx;
+  aio_context_t *ctx;
+
+  struct iocb *iocbs;
 
 } Queue;
 
@@ -84,7 +69,7 @@ typedef struct {
 static void
 Queue_dealloc(Queue* self)
 {
-  io_queue_release(*self->ctx);
+  io_destroy(*self->ctx);
   self->ob_type->tp_free((PyObject*)self);
 }
 
@@ -97,12 +82,13 @@ Queue_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
   if (self != NULL) {
     self->maxIO = 32;
     self->busy = 0;
-    self->ctx = malloc(sizeof(io_context_t));
+    self->fd = -1;
+    self->ctx = malloc(sizeof(aio_context_t));
     if (self->ctx==NULL) {
       Py_DECREF(self);
       return NULL;
     }
-    memset(self->ctx, 0, sizeof(io_context_t));
+    memset(self->ctx, 0, sizeof(aio_context_t));
   }
 
   return (PyObject *)self;
@@ -113,21 +99,38 @@ Queue_init(Queue *self, PyObject *args, PyObject *kwds)
 {
   int res;
   static char *kwlist[] = {"maxIO", NULL};
+
   if (!PyArg_ParseTupleAndKeywords(args, kwds, "|i", kwlist, &self->maxIO))
     return -1;
-  res = io_queue_init(self->maxIO, self->ctx);
+
+  res = io_setup(self->maxIO, self->ctx);
   if (res < 0)  {
     PyErr_SetFromAIOError(res);
     return -1;
   }
+
+  self->fd = eventfd(0);
+  if (self->fd == -1) {
+    PyErr_SetFromErrno(PyExc_IOError);
+    return -1;
+  }
+  fcntl(self->fd, F_SETFL, fcntl(self->fd, F_GETFL, 0) | O_NONBLOCK);
+
   return 0;
 }
 
 #define Queue_calcAlignedSize(size) (size % PAGESIZE) ?  (size + (PAGESIZE - size % PAGESIZE)) : size
 
-#define Queue_processEvents_CLEANUP { munmap(buf, alignedSize); }
-
-
+#define Queue_processEvents_CLEANUP {			\
+    if (iocb) free(iocb); if (buf) free(buf);		\
+    Py_XDECREF(defer);					\
+    for (cup=a+1;cup<e;cup++) {				\
+      iocb = (struct iocb *)events[a].obj;		\
+      defer = (PyObject *)iocb->aio_data;		\
+      buf = (char *)iocb->aio_buf;			\
+      free(iocb); free(buf); Py_XDECREF(defer);		\
+    }							\
+  }
 
 PyObject *
 Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
@@ -138,37 +141,35 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
   struct timespec io_ts;
   io_ts.tv_sec = 0;
   io_ts.tv_nsec = 5000;
-  int a, e;
-
+  int a, e, cup;
   if (!PyArg_ParseTupleAndKeywords(args, kwds, "|iii", kwlist,
 				   &minEvents, &maxEvents, &io_ts.tv_nsec))
     return NULL;
 
   struct io_event events[maxEvents];
-
-  e = io_getevents(*self->ctx, minEvents, maxEvents, &events, &io_ts);
-
-  if (e < 0) 
-    return PyErr_SetFromAIOError();
+  e = io_getevents(*self->ctx, minEvents, maxEvents, events, &io_ts);
+  if (e < 0) {
+    PyErr_SetFromAIOError(e);
+    return NULL;
+  }
 
   if (e == 0)
     Py_RETURN_NONE;
 
   for (a=0;a<e;a++) {
     struct iocb *iocb;
-    int iosize, alignedSize;
+    uint iosize, alignedSize;
     char *buf;
     off_t offset;
     PyObject *defer, *arglist, *string;
     int rc, sc, opcode;
 
-    defer = (PyObject *)(events[a].data);
-
-    iocb = events[a].obj;
-    iosize = iocb->u.c.nbytes;
+    iocb = (struct iocb *)events[a].obj;
+    defer = (PyObject *)iocb->aio_data;
+    iosize = iocb->aio_nbytes;
     alignedSize = Queue_calcAlignedSize(iosize); /* bytes missing till the end of page */
-    buf = iocb->u.c.buf;
-    offset = iocb->u.c.offset;
+    buf = (char *)iocb->aio_buf;
+    offset = iocb->aio_offset;
     opcode = iocb->aio_lio_opcode;
     rc = events[a].res2; sc = events[a].res != iosize;
 
@@ -178,19 +179,17 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
       
       errback = PyObject_GetAttrString(defer, "errback");
       if (errback == NULL) { /* Not a Deferred? */
-	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object");
+	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object (no errback attribute).");
 	Queue_processEvents_CLEANUP;
 	return NULL;
       }
 
       if (rc) 
-	exception = aioErrorToException(rc);
+	exception = PyErr_SetFromAIOError(rc);
       else if (sc) {
 	PyObject *excargs;
 	/* iosize = expected; events[a].res = really processed; */
-	excargs = Py_BuildValue("(sii)", "Missing bytes", iosize, events[a].res);
-	exception = PyInstance_New(PyExc_AssertionError, excargs, NULL);
-	Py_DECREF(excargs);
+	exception = PyErr_Format(PyExc_AssertionError, "Missing bytes: should read %i, got %i.", iosize, events[a].res);
 	if (exception == NULL) {	  
 	  Queue_processEvents_CLEANUP;
 	  return NULL;
@@ -199,143 +198,138 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
 	fprintf(stderr, "I should never be here.");
 	exit(1);
       }
-
-      Queue_processEvents_CLEANUP;
+      
+      free(buf); free(iocb);
       arglist = Py_BuildValue("(O)", exception);
       ret = PyEval_CallObject(errback, arglist);
-      Py_XDECREF(ret);
       Py_DECREF(arglist);
       Py_DECREF(exception);
       Py_DECREF(errback);
-
+      if (ret == NULL) {
+	Queue_processEvents_CLEANUP;	
+	return NULL;
+      }
+      Py_XDECREF(ret);
     }
-
     PyObject *callback;
 
-    if (opcode == IO_CMD_PREAD) {
+    if (opcode == IOCB_CMD_PREAD) {
       /*
-	 Copy the mmap'ed buffer to a string and pass it to callback.
+	 Copy the buffer to a string and pass it to callback.
       */
-
       string = PyString_FromStringAndSize(buf, iosize);
-      Queue_processEvents_CLEANUP;
-      arglist = Py_BuildValue("(O)", string);
-      callback = PyObject_GetAttrString(defer, "callback");
+      free(buf); 
 
-      if (callback == NULL) { /* Not a Deferred? */
-	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object");
+      arglist = Py_BuildValue("(O)", string);
+      if (defer == NULL) {
+	PyErr_SetString(PyExc_TypeError, "aio_data is NULL");
+	Py_XDECREF(string);
 	Queue_processEvents_CLEANUP;
 	return NULL;
       }
-
+      callback = PyObject_GetAttrString(defer, "callback");
+      if (callback == NULL) { /* Not a Deferred? */
+	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object (no callback attribute).");
+	Queue_processEvents_CLEANUP;
+	return NULL;
+      }
       ret = PyEval_CallObject(callback, arglist);
-      Py_XDECREF(ret);
       Py_DECREF(arglist);
       Py_DECREF(callback);
       Py_DECREF(string);
-
+      Py_DECREF(defer);
+      
+      if (ret == NULL)
+	return NULL;
+      Py_XDECREF(ret);
     } else {
       fprintf(stderr, "I should never, ever be here.");
       exit(1);
     }
   }
 
+  self->busy -= e;
+
   Py_RETURN_NONE;
 }
 
-#define Queue_scheduleRead_CLEANUP { for(cup=0;cup<a-1;cup++) { munmap(ioq[cup]->u.c.buf, alignedSize); Py_DECREF(deferreds[cup]); } }
+#define Queue_scheduleRead_CLEANUP { for(cup=0;cup< a>0?a-1:0;cup++) { printf("TOTAL: %i, NOW: %i, TO: %i\n", chunks, cup, a); \
+      if (ioq[cup]->aio_buf) free(ioq[cup]->aio_buf); \
+      Py_XDECREF(deferreds[cup]); } if (ioq) free(ioq); if (deferreds) free(deferreds); }
 
 static PyObject*
 Queue_scheduleRead(Queue *self, PyObject *args, PyObject *kwds) {
-  int fd, offset, chunks, chunkSize, a, cup;
-
+  unsigned int fd, offset, chunks, chunkSize, a, cup;
   static char *kwlist[] = {"fd", "offset", "chunks", "chunkSize", NULL};
 
   if (!PyArg_ParseTupleAndKeywords(args, kwds, "iiii|", kwlist,
 				   &fd, &offset, &chunks, &chunkSize))
-
     return NULL;
 
-  if (chunks < 1) {
-    PyErr_SetString(PyExc_ValueError, "chunks < 1");
+  if ( self->busy + chunks > self->maxIO ) { 
+    PyErr_SetString(QueueError, "can not accept new schedules - no free slots");
     return NULL;
-  } else if ( self->busy + chunks > self->maxIO) { 
-    PyErr_SetString(QueueError, "no free slots");
+  }  else if ( chunks < 1 ) {
+    PyErr_SetString(PyExc_IOError, "chunks < 1");
     return NULL;
   }
 
   struct iocb *ioq[chunks];
-  PyObject *deferreds[chunks], *defer, *attrlist, *arglist;
-  struct iocb *io;
-  char *buf;
+  PyObject *deferreds[chunks];
+  PyObject *defer, *attrlist;
+
+  for (a=0;a<chunks;a++) {
+    attrlist = Py_BuildValue("()");
+    deferreds[a] = PyInstance_New(Deferred, attrlist, NULL);
+    if (deferreds[a] == NULL) {
+      Queue_scheduleRead_CLEANUP;
+      return NULL;
+    }
+    Py_DECREF(attrlist);
+  }
   int alignedSize = Queue_calcAlignedSize(chunkSize); /* make sure we want N * PAGESIZE chunks */
 
+  char *buf ;
+  struct iocb *io;
+
   for (a = 0; a < chunks; a++) {
-    io = (struct iocb *) malloc(sizeof(struct iocb));
+
+    buf = valloc(alignedSize);
+    if (buf == NULL)  {
+      Queue_scheduleRead_CLEANUP;
+      return PyErr_NoMemory();
+    }
+    
+    io = malloc(sizeof(struct iocb));
     if (io == NULL) {
       Queue_scheduleRead_CLEANUP;
       return PyErr_NoMemory();
     }
 
-    buf = (char *)mmap(0, alignedSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (buf == NULL)  {
-      free(io);
-      Queue_scheduleRead_CLEANUP;
-      return PyErr_NoMemory();
-    }
-
-    // XXX: TODO: CHECK IF THIS WORKS FOR NON-PAGE-ALIGNED SIZES AND OFFSETS!
-    // XXX: TODO: (SEE COMMENT ABOUT LIGHTHTTPD BELOW)
-    io_prep_pread(io, fd, buf, chunkSize, offset);
-
-    /*
-       Create a Deferred object
-    */
-
-    attrlist = Py_BuildValue("()");
-
-    defer = PyInstance_New(Deferred, attrlist, NULL);
-    if (defer == NULL) {
-      munmap(buf, alignedSize);
-      Queue_scheduleRead_CLEANUP;
-      return NULL;
-    }
-    Py_DECREF(attrlist);
-    io_set_callback(io, defer);
-    deferreds[a] = defer;
+    asyio_prep_pread(io, fd, buf, chunkSize, offset, self->fd);
+    io->aio_data = deferreds[a];
     ioq[a] = io;
-
-    /*
-       lighthttpd sources say something about checking if offset
-       is page-aligned... */
-
     offset += chunkSize;
   }
-
   self->busy += chunks;
   int res = io_submit(*self->ctx, chunks, ioq);
-  if (res < 0)
-    return PyErr_SetFromAIOError();
+  if (res < 0) {
+    PyErr_SetFromAIOError(res);
+    return NULL;
+  }
 
-  if (chunks == 1)
-    /*
-       If there is only one Deferred,
-       return it.
-    */
-    return deferreds[0];
-
-  /*
-     Return more, than one Deferred as a DeferredList.
-  */
-  PyObject *lst = PyList_New(chunks), *dlst;
-  for (a = 0; a < chunks; a++)
-    PyList_SET_ITEM(lst, a, deferreds[a]);
-
+  PyObject *lst, *dlst, *arglist;
+  lst = PyList_New(chunks);
+  for (a = 0; a < chunks; a++) {
+    PyList_SET_ITEM(lst, a, deferreds[a]); 
+    Py_INCREF(deferreds[a]);
+  }
   arglist = Py_BuildValue("(O)", lst);
+  if (arglist == NULL)
+    return PyErr_NoMemory();
   dlst = PyInstance_New(DeferredList, arglist, NULL);
   Py_DECREF(arglist);
-
-  return dlst;
+  return dlst; 
 }
 
 static PyMemberDef Queue_members[] = {
@@ -344,6 +338,9 @@ static PyMemberDef Queue_members[] = {
 this object can handle. See man:io_queue_init(2) ."},
   {"busy", T_INT, offsetof(Queue, busy), 0,
    "Number of currently handled operations."},
+  {"fd", T_INT, offsetof(Queue, fd), 0,
+   "Filedescriptor, which will receive notification events.\n\
+See: man:eventfd(2) ."},
   {NULL}  /* Sentinel */
 };
 

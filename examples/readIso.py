@@ -16,14 +16,13 @@
 #
 
 import os, sys
-from twisted.internet import reactor, task
+from twisted.internet import epollreactor
+epollreactor.install()
+from twisted.internet import task, reactor
 from twisted.python import log
 import aio
 
-completed = 0
-
 def _done(data):
-    global completed
     sys.stdout.write('OMG!, readed %.2f MB!\n' % (sum([len(x[1]) for x in data if x[0] is True])/(1024.0 * 1024.0)))
     sys.stdout.flush()
     _shutdown()
@@ -34,21 +33,15 @@ def _err(*args, **kw):
 def _shutdown(*args, **kw):
     reactor.stop()
 
-def qAndReaper():
-    q = aio.Queue(128)
-    reap = task.LoopingCall(q.processEvents, minEvents = 128, maxEvents = 128, timeoutNSec=50)
-    reap.start(0.1, now=True)
-    return q
-
-def schedule(q):
-    fd = os.open("/home/dotz/6.2-RELEASE-i386-disc1.iso", os.O_RDONLY | os.O_DIRECT)
-    sys.stdout.write('Scheduling read...\n')
-    q.scheduleRead(fd, 0, 128, 409600 * 5).addCallbacks(_done, _err)
-    os.close(fd)
-    sys.stdout.write('done!\n')
+def _prepare():
+    task.LoopingCall(sys.stdout.write, 'PING! Just a annoying reminder\n').start(0.5, now=False)
+    q = aio.Queue()
+    df = aio.DeferredFile(q, "/home/dotz/6.2-RELEASE-i386-disc1.iso")
+    #task.LoopingCall(df.stats).start(5, now=False)
+    df.defer.addCallbacks(_done, _err)
+    df.start()
+    return df.defer
     
 log.startLogging(sys.stdout)
-annoy = task.LoopingCall(sys.stdout.write, 'PING!\n')
-annoy.start(0.1, now=True)
-schedule( qAndReaper() )
+_prepare()
 reactor.run()

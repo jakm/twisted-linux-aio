@@ -10,5 +10,5 @@ setup(name = "twisted-linux-aio",
       platforms = "linux",
       license = "MIT",
       packages = [ 'aio' ], 
-      ext_modules = [ Extension( "_aio", ["aio/_aio.c"], libraries = ["aio"] ) ] )
+      ext_modules = [ Extension( "_aio", ["aio/_aio.c"] )])
                       

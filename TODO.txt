@@ -4,38 +4,18 @@ on Linux.
 Copyright (c) 2007 Michal Pasternak <michal.dtz@gmail.com>
 See LICENSE for details.
 
-Need an implementation for your operating system? Mail me!
+Need an implementation for your operating system or framework? 
+Feel free to mail me about it!
 
-1) support /sys/block/sda/queue/nr_requests
+twisted-linux-aio TODO list
+===========================
 
-1.5) looking at linux kernel source, it seems likely, that 
-     you can get eventfd notification for completed
-     aio... just set IOCB_FLAG_RESFD in iocb->aio_flags
-     and set iocb->aio_resfd 
+Documentaiton:
+--------------
+   - document /sys/block/sda/queue/nr_requests
 
-2) we need to reap aio events periodically.
-
-   As by the time of this writing there is no consent
-   between Linux kernel developers, how file and socket AIO
-   should be merged, we have no other option.
-
-   Only option right now is to start some LoopingCall, 
-   which calls q.processEvents. It should be reasonably
-   simple to implement a wrapper object for _aio.Queue, 
-   that would run that LoopingCall as soon as there are
-   AIO requests. 
-   
-   Running this in thread is not an option. Callbacks
-   would be called from that thread, which is bad. 
-
-3) we need to handle situations, where Queue.busy >= Queue.maxIO
-
-   Programmer doesn't want to know about such low-level 
-   stuff. Make that high-level queue, described in 1), return
-   a deferred if there are no free slots, and wait for AIO
-   operations to complete.
-
-4) extra stuff: 
+Extra stuff: 
+------------
    - implement writing 
    - implement nevow.static.StaticAIOFile 
    - write a deferred shutil.copyfileobj replacement
@@ -43,3 +23,4 @@ Need an implementation for your operating system? Mail me!
      implement ideas from lighthttpd-1.5 
      (aio reads saved onto mmap'ed shm file, then 
      sent with sendfile)
+
