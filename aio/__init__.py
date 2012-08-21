@@ -109,6 +109,7 @@ class Queue(_aio_Queue):
 
     def readfile(self, filename, chunkSize = 4096, callback=None):
         f = DeferredFile(self, filename, chunkSize, callback)
+        f.start()
         return f.defer
         
         
