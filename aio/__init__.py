@@ -80,7 +80,7 @@ class KAIOCooperator(object):
 class DeferredFile(KAIOCooperator):
     """This is DeferredFile, a file which is read in asynchronous way via KAIO.
     """
-    def __init__(self, queue, filename, callback = None, chunkSize = 4096):
+    def __init__(self, queue, filename, chunkSize = 4096, callback = None):
         self.filename = filename
         self.fd = os.open(filename, os.O_RDONLY | os.O_DIRECT)
         self.fileSize = os.stat(filename).st_size
