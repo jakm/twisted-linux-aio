@@ -121,15 +121,15 @@ Queue_init(Queue *self, PyObject *args, PyObject *kwds)
 
 #define Queue_calcAlignedSize(size) (size % PAGESIZE) ?  (size + (PAGESIZE - size % PAGESIZE)) : size
 
-#define Queue_processEvents_CLEANUP {			\
-    if (iocb) free(iocb); if (buf) free(buf);		\
-    Py_XDECREF(defer);					\
-    for (cup=a+1;cup<e;cup++) {				\
-      iocb = (struct iocb *)events[a].obj;		\
-      defer = (PyObject *)iocb->aio_data;		\
-      buf = (char *)iocb->aio_buf;			\
-      free(iocb); free(buf); Py_XDECREF(defer);		\
-    }							\
+#define Queue_processEvents_CLEANUP {           \
+    if (iocb) free(iocb); if (buf) free(buf);   \
+    Py_XDECREF(defer);                          \
+    for (cup=a+1;cup<e;cup++) {                 \
+      iocb = (struct iocb *)events[a].obj;      \
+      defer = (PyObject *)iocb->aio_data;       \
+      buf = (char *)iocb->aio_buf;              \
+      free(iocb); free(buf); Py_XDECREF(defer); \
+    }                                           \
   }
 
 PyObject *
@@ -143,7 +143,7 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
   io_ts.tv_nsec = 5000;
   int a, e, cup;
   if (!PyArg_ParseTupleAndKeywords(args, kwds, "|iii", kwlist,
-				   &minEvents, &maxEvents, &io_ts.tv_nsec))
+                                   &minEvents, &maxEvents, &io_ts.tv_nsec))
     return NULL;
 
   struct io_event events[maxEvents];
@@ -179,26 +179,26 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
 
       errback = PyObject_GetAttrString(defer, "errback");
       if (errback == NULL) { /* Not a Deferred? */
-	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object (no errback attribute).");
-	Queue_processEvents_CLEANUP;
-	return NULL;
+        PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object (no errback attribute).");
+        Queue_processEvents_CLEANUP;
+        return NULL;
       }
 
       if (rc) 
-	exception = PyErr_SetFromAIOError(rc);
+        exception = PyErr_SetFromAIOError(rc);
       else if (sc) {
-	PyObject *excargs;
-	/* iosize = expected; events[a].res = really processed; */
-	//exception = PyErr_Format(PyExc_IOError, "Missing bytes: should read %i, got %i.", iosize, events[a].res);
-  arglist = Py_BuildValue("(O)", PyString_FromFormat("Missing bytes: should read %i, got %i.", iosize, events[a].res));
-  exception = PyEval_CallObject(PyExc_IOError, arglist);
-	if (exception == NULL) {	  
-	  Queue_processEvents_CLEANUP;
-	  return PyErr_NoMemory();
-	}
+        PyObject *excargs;
+        /* iosize = expected; events[a].res = really processed; */
+        //exception = PyErr_Format(PyExc_IOError, "Missing bytes: should read %i, got %i.", iosize, events[a].res);
+        arglist = Py_BuildValue("(O)", PyString_FromFormat("Missing bytes: should read %i, got %i.", iosize, events[a].res));
+        exception = PyEval_CallObject(PyExc_IOError, arglist);
+        if (exception == NULL) {
+          Queue_processEvents_CLEANUP;
+          return PyErr_NoMemory();
+        }
       } else {
-	fprintf(stderr, "I should never be here.");
-	exit(1);
+        fprintf(stderr, "I should never be here.");
+        exit(1);
       }
 
       free(buf); free(iocb);
@@ -208,41 +208,41 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
       Py_DECREF(exception);
       Py_DECREF(errback);
       if (ret == NULL) {
-	Queue_processEvents_CLEANUP;	
-	return NULL;
+        Queue_processEvents_CLEANUP;
+        return NULL;
       }
       Py_XDECREF(ret);
-    }
-    else
-    {
+
+    } else {
+
       PyObject *callback;
 
       if (opcode == IOCB_CMD_PREAD) {
         /*
-  	 Copy the buffer to a string and pass it to callback.
+         Copy the buffer to a string and pass it to callback.
         */
         string = PyString_FromStringAndSize(buf, iosize);
         free(buf); 
 
         arglist = Py_BuildValue("(O)", string);
         if (defer == NULL) {
-  	PyErr_SetString(PyExc_TypeError, "aio_data is NULL");
-  	Py_XDECREF(string);
-  	Queue_processEvents_CLEANUP;
-  	return NULL;
+          PyErr_SetString(PyExc_TypeError, "aio_data is NULL");
+          Py_XDECREF(string);
+          Queue_processEvents_CLEANUP;
+          return NULL;
         }
         callback = PyObject_GetAttrString(defer, "callback");
         if (callback == NULL) { /* Not a Deferred? */
-  	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object (no callback attribute).");
-  	Queue_processEvents_CLEANUP;
-  	return NULL;
+          PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object (no callback attribute).");
+          Queue_processEvents_CLEANUP;
+          return NULL;
         }
         ret = PyEval_CallObject(callback, arglist);
         Py_DECREF(arglist);
         Py_DECREF(callback);
         Py_DECREF(string);
         Py_DECREF(defer);
-        
+
         if (ret == NULL) {
           Queue_processEvents_CLEANUP
           return NULL;
@@ -270,7 +270,7 @@ Queue_scheduleRead(Queue *self, PyObject *args, PyObject *kwds) {
   static char *kwlist[] = {"fd", "offset", "chunks", "chunkSize", NULL};
 
   if (!PyArg_ParseTupleAndKeywords(args, kwds, "iiii|", kwlist,
-				   &fd, &offset, &chunks, &chunkSize))
+                                   &fd, &offset, &chunks, &chunkSize))
     return NULL;
 
   if ( self->busy + chunks > self->maxIO ) { 
@@ -398,12 +398,12 @@ static PyTypeObject QueueType = {
   0,                         /*tp_as_buffer*/
   Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
   "Queue objects",           /* tp_doc */
-  0,		               /* tp_traverse */
-  0,		               /* tp_clear */
-  0,		               /* tp_richcompare */
-  0,		               /* tp_weaklistoffset */
-  0,		               /* tp_iter */
-  0,		               /* tp_iternext */
+  0,                         /* tp_traverse */
+  0,                         /* tp_clear */
+  0,                         /* tp_richcompare */
+  0,                         /* tp_weaklistoffset */
+  0,                         /* tp_iter */
+  0,                         /* tp_iternext */
   Queue_methods,             /* tp_methods */
   Queue_members,             /* tp_members */
   0,                         /* tp_getset */
