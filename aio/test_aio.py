@@ -69,4 +69,4 @@ class TestAio(unittest.TestCase):
         def _shutdown(res):
             self.assertEquals(res, True)
             os.close(fd)
-        return q.scheduleRead(fd, 0, 1, 40).addCallbacks(_defaultCallback, _defaultErrback)
+        return q.scheduleRead(fd, 0, 1, 40).addCallbacks(_defaultCallback, _defaultErrback).addCallbacks(_shutdown, _shutdown)
