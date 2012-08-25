@@ -176,7 +176,7 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
     if (rc || sc) {
 
       PyObject *errback, *exception;
-      
+
       errback = PyObject_GetAttrString(defer, "errback");
       if (errback == NULL) { /* Not a Deferred? */
 	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object (no errback attribute).");
@@ -189,16 +189,18 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
       else if (sc) {
 	PyObject *excargs;
 	/* iosize = expected; events[a].res = really processed; */
-	exception = PyErr_Format(PyExc_AssertionError, "Missing bytes: should read %i, got %i.", iosize, events[a].res);
+	//exception = PyErr_Format(PyExc_IOError, "Missing bytes: should read %i, got %i.", iosize, events[a].res);
+  arglist = Py_BuildValue("(O)", PyString_FromFormat("Missing bytes: should read %i, got %i.", iosize, events[a].res));
+  exception = PyEval_CallObject(PyExc_IOError, arglist);
 	if (exception == NULL) {	  
 	  Queue_processEvents_CLEANUP;
-	  return NULL;
+	  return PyErr_NoMemory();
 	}
       } else {
 	fprintf(stderr, "I should never be here.");
 	exit(1);
       }
-      
+
       free(buf); free(iocb);
       arglist = Py_BuildValue("(O)", exception);
       ret = PyEval_CallObject(errback, arglist);
@@ -211,40 +213,45 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
       }
       Py_XDECREF(ret);
     }
-    PyObject *callback;
+    else
+    {
+      PyObject *callback;
 
-    if (opcode == IOCB_CMD_PREAD) {
-      /*
-	 Copy the buffer to a string and pass it to callback.
-      */
-      string = PyString_FromStringAndSize(buf, iosize);
-      free(buf); 
+      if (opcode == IOCB_CMD_PREAD) {
+        /*
+  	 Copy the buffer to a string and pass it to callback.
+        */
+        string = PyString_FromStringAndSize(buf, iosize);
+        free(buf); 
 
-      arglist = Py_BuildValue("(O)", string);
-      if (defer == NULL) {
-	PyErr_SetString(PyExc_TypeError, "aio_data is NULL");
-	Py_XDECREF(string);
-	Queue_processEvents_CLEANUP;
-	return NULL;
+        arglist = Py_BuildValue("(O)", string);
+        if (defer == NULL) {
+  	PyErr_SetString(PyExc_TypeError, "aio_data is NULL");
+  	Py_XDECREF(string);
+  	Queue_processEvents_CLEANUP;
+  	return NULL;
+        }
+        callback = PyObject_GetAttrString(defer, "callback");
+        if (callback == NULL) { /* Not a Deferred? */
+  	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object (no callback attribute).");
+  	Queue_processEvents_CLEANUP;
+  	return NULL;
+        }
+        ret = PyEval_CallObject(callback, arglist);
+        Py_DECREF(arglist);
+        Py_DECREF(callback);
+        Py_DECREF(string);
+        Py_DECREF(defer);
+        
+        if (ret == NULL) {
+          Queue_processEvents_CLEANUP
+          return NULL;
+        }
+        Py_XDECREF(ret);
+      } else {
+        fprintf(stderr, "I should never, ever be here.");
+        exit(1);
       }
-      callback = PyObject_GetAttrString(defer, "callback");
-      if (callback == NULL) { /* Not a Deferred? */
-	PyErr_SetString(PyExc_TypeError, "Object passed to Queue.schedule was not a twisted.internet.defer.Deferred object (no callback attribute).");
-	Queue_processEvents_CLEANUP;
-	return NULL;
-      }
-      ret = PyEval_CallObject(callback, arglist);
-      Py_DECREF(arglist);
-      Py_DECREF(callback);
-      Py_DECREF(string);
-      Py_DECREF(defer);
-      
-      if (ret == NULL)
-	return NULL;
-      Py_XDECREF(ret);
-    } else {
-      fprintf(stderr, "I should never, ever be here.");
-      exit(1);
     }
   }
 

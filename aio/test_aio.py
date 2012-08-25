@@ -1,4 +1,5 @@
 import os, sys, time
+from twisted.python.failure import Failure
 from twisted.trial import unittest
 from twisted.internet import reactor, task
 from twisted.internet.threads import deferToThread
@@ -53,8 +54,14 @@ class TestAio(unittest.TestCase):
         # read more data than available
         q = aio.Queue(1)
         fd = os.open(TEST_FILENAME, os.O_DIRECT)
-        self.assertRaises(IOError, q.scheduleRead, fd, 0, 1, 4096 * 4096)
-        os.close(fd)
+        def _defaultCallback(results):
+            for res in results:
+                if not res[0] and isinstance(res[1], Failure):
+                    if res[1].trap(IOError) is IOError:
+                        return True
+            return False
+
+        return q.scheduleRead(fd, 0, 1, 4096 * 4096).addBoth(_defaultCallback).addBoth(self._shutdown, fd)
 
 
     def test__aio(self, *args, **kw):
@@ -66,7 +73,8 @@ class TestAio(unittest.TestCase):
             return True
         def _defaultErrback(*args, **kw):
             return False
-        def _shutdown(res):
-            self.assertEquals(res, True)
-            os.close(fd)
-        return q.scheduleRead(fd, 0, 1, 40).addCallbacks(_defaultCallback, _defaultErrback).addCallbacks(_shutdown, _shutdown)
+        return q.scheduleRead(fd, 0, 1, 40).addCallbacks(_defaultCallback, _defaultErrback).addBoth(self._shutdown, fd)
+
+    def _shutdown(self, res, fd):
+        os.close(fd)
+        self.assertEquals(True, res, "Error in previous callback/errback.")
