@@ -11,9 +11,6 @@
 #include <Python.h>
 #include <structmember.h>
 
-#include <unistd.h>
-#include <fcntl.h>
-
 #include <sys/eventfd.h>
 #include <libaio.h>
 
@@ -117,7 +114,6 @@ Queue_init(Queue *self, PyObject *args, PyObject *kwds)
     PyErr_SetFromErrno(PyExc_IOError);
     return -1;
   }
-  fcntl(self->fd, F_SETFL, fcntl(self->fd, F_GETFL, 0) | O_NONBLOCK);
 
   return 0;
 }
