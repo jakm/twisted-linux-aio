@@ -10,9 +10,12 @@
 
 #include <Python.h>
 #include <structmember.h>
-#include <sys/mman.h>
 
-#include "libasyio.c"
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <sys/eventfd.h>
+#include <libaio.h>
 
 /* ================================================================================
 
@@ -59,7 +62,7 @@ typedef struct {
   unsigned int fd; /* notification fd */
 
   /* private */
-  aio_context_t *ctx;
+  io_context_t *ctx;
 
   struct iocb *iocbs;
 
@@ -83,12 +86,12 @@ Queue_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     self->maxIO = 32;
     self->busy = 0;
     self->fd = -1;
-    self->ctx = malloc(sizeof(aio_context_t));
+    self->ctx = malloc(sizeof(io_context_t));
     if (self->ctx==NULL) {
       Py_DECREF(self);
       return NULL;
     }
-    memset(self->ctx, 0, sizeof(aio_context_t));
+    memset(self->ctx, 0, sizeof(io_context_t));
   }
 
   return (PyObject *)self;
@@ -109,7 +112,7 @@ Queue_init(Queue *self, PyObject *args, PyObject *kwds)
     return -1;
   }
 
-  self->fd = eventfd(0);
+  self->fd = eventfd(0, EFD_NONBLOCK);
   if (self->fd == -1) {
     PyErr_SetFromErrno(PyExc_IOError);
     return -1;
@@ -126,8 +129,8 @@ Queue_init(Queue *self, PyObject *args, PyObject *kwds)
     Py_XDECREF(defer);                          \
     for (cup=a+1;cup<e;cup++) {                 \
       iocb = (struct iocb *)events[a].obj;      \
-      defer = (PyObject *)iocb->aio_data;       \
-      buf = (char *)iocb->aio_buf;              \
+      defer = (PyObject *)iocb->data;           \
+      buf = (char *)iocb->u.c.buf;              \
       free(iocb); free(buf); Py_XDECREF(defer); \
     }                                           \
   }
@@ -165,11 +168,11 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
     int rc, sc, opcode;
 
     iocb = (struct iocb *)events[a].obj;
-    defer = (PyObject *)iocb->aio_data;
-    iosize = iocb->aio_nbytes;
+    defer = (PyObject *)iocb->data;
+    iosize = iocb->u.c.nbytes;
     alignedSize = Queue_calcAlignedSize(iosize); /* bytes missing till the end of page */
-    buf = (char *)iocb->aio_buf;
-    offset = iocb->aio_offset;
+    buf = (char *)iocb->u.c.buf;
+    offset = iocb->u.c.offset;
     opcode = iocb->aio_lio_opcode;
     rc = events[a].res2; sc = events[a].res != iosize;
 
@@ -217,7 +220,7 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
 
       PyObject *callback;
 
-      if (opcode == IOCB_CMD_PREAD) {
+      if (opcode == IO_CMD_PREAD) {
         /*
          Copy the buffer to a string and pass it to callback.
         */
@@ -261,7 +264,7 @@ Queue_processEvents(Queue *self, PyObject *args, PyObject *kwds)
 }
 
 #define Queue_scheduleRead_CLEANUP { for(cup=0;cup< a>0?a-1:0;cup++) { printf("TOTAL: %i, NOW: %i, TO: %i\n", chunks, cup, a); \
-      if (ioq[cup]->aio_buf) free(ioq[cup]->aio_buf); \
+      if (ioq[cup]->u.c.buf) free(ioq[cup]->u.c.buf); \
       Py_XDECREF(deferreds[cup]); } if (ioq) free(ioq); if (deferreds) free(deferreds); }
 
 static PyObject*
@@ -313,8 +316,9 @@ Queue_scheduleRead(Queue *self, PyObject *args, PyObject *kwds) {
       return PyErr_NoMemory();
     }
 
-    asyio_prep_pread(io, fd, buf, chunkSize, offset, self->fd);
-    io->aio_data = deferreds[a];
+    io_prep_pread(io, fd, buf, chunkSize, offset);
+    io_set_eventfd(io, self->fd);
+    io->data = deferreds[a];
     ioq[a] = io;
     offset += chunkSize;
   }
